@@ -1,0 +1,113 @@
+apiVersion: apps/v1
+kind: ConfigMap
+metadata:
+  name: message-config
+data:
+  msg-key: "Test Msg"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hello
+spec:
+  type: LoadBalancer
+  selector:
+    app: hello
+  ports:
+    - port: 3000
+      targetPort: 3000
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello
+spec:
+  replicas: 3
+  minReadySeconds: 15
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+       maxUnavailable: 25%
+       maxSurge: 1
+  template:
+    metadata:
+      name: hello
+      labels:
+        app: hello
+    spec:
+      containers:
+      - image: registry/hello:{{BUILD_NUMBER}}
+        env:
+        - name: MESSAGE
+          valueFrom:
+            configMapKeyRef:
+              name: message-config
+              key: msg-key
+        name: hello
+        volumeMounts:
+        - name: temp
+          mountPath: /tmp
+          readOnly: true
+        # The kubelet will send the first readiness probe 5 seconds after the container starts.If the probe succeeds, the Pod will be marked as ready. The kubelet will continue to run this check every 10 seconds.
+        readinessProbe:
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          httpGet:
+            path: /
+            port: 3000
+        # The kubelet will run the first liveness probe 15 seconds after the container starts
+        livenessProbe:
+          failureThreshold: 1
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          httpGet:
+            path: /health
+            port: 3000
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 300m
+            memory: 256Mi
+      volumes:
+      - name: temp
+        emptyDir: {}
+
+---
+apiVersion: autoscaling/v1
+kind: HorizontalPodAutoscaler
+metadata:
+  name: hello
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: hello
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 50
+
+---
+apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+  name: hello
+spec:
+  tls:
+    - hosts:
+        - hello.example.com
+      # openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout ${KEY_FILE} -out ${CERT_FILE} -subj "/CN=${HOST}/O=${HOST}"
+      # kubectl create secret tls ${CERT_NAME} --key ${KEY_FILE} --cert ${CERT_FILE}
+      # put secret in k8s secret
+      secretName: tls-secret
+  rules:
+    - host: hello.example.com
+      http:
+        paths:
+          - path: /
+            backend:
+              serviceName: hello
+              servicePort: 3000
